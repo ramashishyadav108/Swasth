@@ -17,7 +17,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 10000,
+  timeout: 100000,
 });
 
 // Request interceptor for logging
