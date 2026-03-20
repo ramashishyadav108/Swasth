@@ -80,7 +80,11 @@ const emptyPurchaseRow = (): PurchaseDirectRow => ({
   supplier: '',
 });
 
-const Dashboard: React.FC = () => {
+interface DashboardProps {
+  onRegisterExport?: (fn: () => void) => void;
+}
+
+const Dashboard: React.FC<DashboardProps> = ({ onRegisterExport }) => {
   const [activeTab, setActiveTab] = useState<TabType>('sales');
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
@@ -210,7 +214,7 @@ const Dashboard: React.FC = () => {
         items: saleCart.map(i => ({ medicine_id: i.medicine_id, quantity: i.quantity, unit_price: i.mrp })),
       });
       setBillingSuccess(`Sale of ${formatCurrency(saleCartTotal)} completed!`);
-      setSaleCart([]); setPatientName(''); setSaleSearch('');
+      setSaleCart([]); setPatientName(''); setSaleSearch(''); setSalesPage(1);
       fetchSummary(); fetchRecentSales();
       if (invLoaded) fetchInventory();
       setTimeout(() => setBillingSuccess(null), 4000);
@@ -323,18 +327,75 @@ const Dashboard: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // ── Pagination state ──
+  const [salesPage, setSalesPage] = useState(1);
+  const [purchasesPage, setPurchasesPage] = useState(1);
+  const [invPage, setInvPage] = useState(1);
+  const [invSearch, setInvSearch] = useState('');
+  const PAGE_SIZE = 10;
+
   // ── Inventory helpers ──
   const normalizeInvStatus = (s: string) => STATUS_MAP[s] || s;
 
-  const handleInvExport = () => {
-    const rows = invMedicines.map(m => [m.name, m.generic_name, m.category, m.batch_no, m.expiry_date, m.quantity, m.cost_price, m.mrp, m.supplier, m.status]);
-    const csv = [['Name', 'Generic', 'Category', 'Batch', 'Expiry', 'Qty', 'Cost', 'MRP', 'Supplier', 'Status'], ...rows].map(r => r.join(',')).join('\n');
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    a.download = 'inventory.csv'; a.click();
+  const escapeCsv = (v: string | number) => {
+    const s = String(v ?? '');
+    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
   };
 
-  const filteredInv = invStatusFilter ? invMedicines.filter(m => m.status === invStatusFilter) : invMedicines;
+  const downloadCsv = (filename: string, headers: string[], rows: (string | number)[][]) => {
+    const csv = [headers, ...rows].map(r => r.map(escapeCsv).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = filename; a.click();
+  };
+
+  const handleInvExport = () => {
+    const rows = invMedicines.map(m => [m.name, m.generic_name, m.category, m.batch_no, m.expiry_date, m.quantity, m.cost_price, m.mrp, m.supplier, m.status]);
+    downloadCsv('inventory.csv', ['Name', 'Generic', 'Category', 'Batch', 'Expiry', 'Qty', 'Cost', 'MRP', 'Supplier', 'Status'], rows);
+  };
+
+  const handleFullExport = async () => {
+    // Medicines
+    const medRows = invMedicines.map(m => [m.name, m.generic_name, m.category, m.batch_no, m.expiry_date, m.quantity, m.cost_price, m.mrp, m.supplier, m.status]);
+    const medCsv = [['Name', 'Generic', 'Category', 'Batch', 'Expiry', 'Qty', 'Cost', 'MRP', 'Supplier', 'Status'], ...medRows].map(r => r.map(escapeCsv).join(',')).join('\n');
+
+    // Sales
+    const saleRows = recentSales.map(s => [s.invoice_no, s.patient_name, s.payment_mode, s.total_amount, s.items_count, s.date, s.status]);
+    const saleCsv = [['Invoice', 'Patient', 'Payment', 'Amount', 'Items', 'Date', 'Status'], ...saleRows].map(r => r.map(escapeCsv).join(',')).join('\n');
+
+    // Purchases
+    const purRows = recentPurchases.map(p => [p.order_no, p.supplier, p.payment_mode, p.total_amount, p.items_count, p.date, p.status]);
+    const purCsv = [['Order No', 'Supplier', 'Payment', 'Amount', 'Items', 'Date', 'Status'], ...purRows].map(r => r.map(escapeCsv).join(',')).join('\n');
+
+    const fullCsv = `=== INVENTORY ===\n${medCsv}\n\n=== SALES ===\n${saleCsv}\n\n=== PURCHASES ===\n${purCsv}`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([fullCsv], { type: 'text/csv' }));
+    a.download = `pharmacy-export-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+  };
+
+  // Register export handler with parent after it's defined
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { onRegisterExport?.(handleFullExport); }, [onRegisterExport]);
+
+  const filteredInv = invMedicines.filter(m => {
+    const matchStatus = !invStatusFilter || m.status === invStatusFilter;
+    const matchSearch = !invSearch.trim() ||
+      m.name.toLowerCase().includes(invSearch.toLowerCase()) ||
+      (m.generic_name || '').toLowerCase().includes(invSearch.toLowerCase());
+    return matchStatus && matchSearch;
+  });
+
+  // Paginated slices
+  const salesPageCount = Math.max(1, Math.ceil(recentSales.length / PAGE_SIZE));
+  const pagedSales = recentSales.slice((salesPage - 1) * PAGE_SIZE, salesPage * PAGE_SIZE);
+
+  const completedPurchases = recentPurchases.filter(p => p.status === 'completed');
+  const purchasesPageCount = Math.max(1, Math.ceil(completedPurchases.length / PAGE_SIZE));
+  const pagedPurchases = completedPurchases.slice((purchasesPage - 1) * PAGE_SIZE, purchasesPage * PAGE_SIZE);
+
+  const invPageCount = Math.max(1, Math.ceil(filteredInv.length / PAGE_SIZE));
+  const pagedInv = filteredInv.slice((invPage - 1) * PAGE_SIZE, invPage * PAGE_SIZE);
 
   const tabs: { id: TabType; label: string; icon: React.ReactNode }[] = [
     { id: 'sales', label: 'Sales', icon: <DollarSign size={15} /> },
@@ -370,23 +431,23 @@ const Dashboard: React.FC = () => {
 
       {/* Tab Navigation */}
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div className="flex items-center justify-between px-4 pt-4 pb-0 border-b border-gray-200">
-          <div className="flex gap-1">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 pt-4 pb-0 border-b border-gray-200 gap-2">
+          <div className="flex gap-1 overflow-x-auto scrollbar-hide">
             {tabs.map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 transition-all ${
+                className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 transition-all whitespace-nowrap ${
                   activeTab === tab.id ? 'border-blue-600 text-blue-600 bg-blue-50' : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
                 {tab.icon}{tab.label}
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-2 pb-2">
+          <div className="flex items-center gap-2 pb-2 shrink-0">
             <button onClick={() => setActiveTab('sales')}
-              className="px-4 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">
+              className="px-3 py-1.5 text-xs sm:text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors whitespace-nowrap">
               + New Sale
             </button>
             <button onClick={() => setActiveTab('purchase')}
-              className="px-4 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+              className="px-3 py-1.5 text-xs sm:text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors whitespace-nowrap">
               + New Purchase
             </button>
           </div>
@@ -496,6 +557,7 @@ const Dashboard: React.FC = () => {
                                   ? prev.filter((_i, i2) => i2 !== idx)
                                   : prev.map((_i, i2) => i2 === idx ? { ..._i, quantity: q } : _i));
                               }}
+                              onFocus={e => e.target.select()}
                               className="w-16 px-2 py-1 border border-gray-300 rounded text-center text-sm" />
                           </td>
                           <td className="py-2 px-3 font-semibold text-gray-900">{formatCurrency(item.mrp)}</td>
@@ -538,7 +600,7 @@ const Dashboard: React.FC = () => {
                     <p className="text-sm">No recent sales found</p>
                   </div>
                 )}
-                {!salesLoading && !salesError && recentSales.map(sale => (
+                {!salesLoading && !salesError && pagedSales.map(sale => (
                   <div key={sale.id} className="flex items-center gap-3 py-3 px-3 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-100 transition-all">
                     <div className="w-9 h-9 bg-green-100 rounded-lg flex items-center justify-center shrink-0">
                       <ShoppingCart size={16} className="text-green-600" />
@@ -554,6 +616,19 @@ const Dashboard: React.FC = () => {
                     <SaleBadge status={sale.status} />
                   </div>
                 ))}
+                {!salesLoading && !salesError && recentSales.length > 0 && (
+                  <div className="flex items-center justify-between pt-3 border-t border-gray-100 mt-1">
+                    <span className="text-xs text-gray-500">
+                      Showing {(salesPage - 1) * PAGE_SIZE + 1}–{Math.min(salesPage * PAGE_SIZE, recentSales.length)} of {recentSales.length}
+                    </span>
+                    <div className="flex gap-2">
+                      <button onClick={() => setSalesPage(p => Math.max(1, p - 1))} disabled={salesPage === 1}
+                        className="px-3 py-1 text-xs font-medium border border-gray-300 rounded-lg disabled:opacity-40 hover:bg-gray-50">Prev</button>
+                      <button onClick={() => setSalesPage(p => Math.min(salesPageCount, p + 1))} disabled={salesPage === salesPageCount}
+                        className="px-3 py-1 text-xs font-medium border border-gray-300 rounded-lg disabled:opacity-40 hover:bg-gray-50">Next</button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -575,11 +650,11 @@ const Dashboard: React.FC = () => {
 
               {/* Make a Purchase */}
               <div className="bg-teal-50 rounded-xl p-4 border border-teal-100">
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
                   <h3 className="text-sm font-semibold text-teal-900 flex items-center gap-2">
                     <Truck size={16} /> Make a Purchase
                   </h3>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <select value={purchasePayment} onChange={e => setPurchasePayment(e.target.value)}
                       className="px-3 py-1.5 text-sm border border-teal-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-teal-400">
                       {PAYMENT_MODES.map(m => <option key={m}>{m}</option>)}
@@ -638,16 +713,19 @@ const Dashboard: React.FC = () => {
                           <td className="py-1.5 px-2">
                             <input type="number" value={row.quantity} min="1"
                               onChange={e => updatePurchaseRow(row.id, 'quantity', parseInt(e.target.value) || 1)}
+                              onFocus={e => e.target.select()}
                               className="w-16 px-2 py-1.5 text-xs border border-teal-200 rounded bg-white focus:outline-none focus:ring-1 focus:ring-teal-400 text-center" />
                           </td>
                           <td className="py-1.5 px-2">
                             <input type="number" value={row.unit_price} min="0" step="0.01"
                               onChange={e => updatePurchaseRow(row.id, 'unit_price', parseFloat(e.target.value) || 0)}
+                              onFocus={e => e.target.select()}
                               className="w-20 px-2 py-1.5 text-xs border border-teal-200 rounded bg-white focus:outline-none focus:ring-1 focus:ring-teal-400 text-center" />
                           </td>
                           <td className="py-1.5 px-2">
                             <input type="number" value={row.mrp} min="0" step="0.01"
                               onChange={e => updatePurchaseRow(row.id, 'mrp', parseFloat(e.target.value) || 0)}
+                              onFocus={e => e.target.select()}
                               className="w-20 px-2 py-1.5 text-xs border border-teal-200 rounded bg-white focus:outline-none focus:ring-1 focus:ring-teal-400 text-center" />
                           </td>
                           <td className="py-1.5 px-2 font-semibold text-gray-800 text-xs whitespace-nowrap">
@@ -687,20 +765,23 @@ const Dashboard: React.FC = () => {
                   </h3>
                   <div className="space-y-2">
                     {pendingDrafts.map(draft => (
-                      <div key={draft.id} className="flex items-center gap-3 py-3 px-4 rounded-lg bg-yellow-50 border border-yellow-200">
-                        <div className="w-9 h-9 bg-yellow-100 rounded-lg flex items-center justify-center shrink-0">
-                          <Truck size={16} className="text-yellow-600" />
+                      <div key={draft.id} className="flex flex-col sm:flex-row sm:items-center gap-2 py-3 px-4 rounded-lg bg-yellow-50 border border-yellow-200">
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <div className="w-9 h-9 bg-yellow-100 rounded-lg flex items-center justify-center shrink-0">
+                            <Truck size={16} className="text-yellow-600" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-semibold text-gray-900 truncate">{draft.order_no}</p>
+                            <p className="text-xs text-gray-500 truncate">
+                              {draft.supplier} &bull; {draft.draft_items.length} item(s) &bull; {draft.payment_mode}
+                            </p>
+                            <p className="text-xs text-gray-400">{formatDate(draft.created_at)}</p>
+                          </div>
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-gray-900">{draft.order_no}</p>
-                          <p className="text-xs text-gray-500 truncate">
-                            {draft.supplier} &bull; {draft.draft_items.length} medicine(s) &bull; {draft.payment_mode} &bull; {formatDate(draft.created_at)}
-                          </p>
-                        </div>
-                        <p className="text-sm font-bold text-gray-900 shrink-0">{formatCurrency(draft.total_amount)}</p>
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+                          <p className="text-sm font-bold text-gray-900">{formatCurrency(draft.total_amount)}</p>
                           <button onClick={() => loadDraftIntoForm(draft)}
-                            className="px-3 py-1.5 text-xs font-medium text-teal-700 border border-teal-300 rounded-lg hover:bg-teal-50">
+                            className="px-3 py-1.5 text-xs font-medium text-teal-700 border border-teal-300 rounded-lg hover:bg-teal-50 whitespace-nowrap">
                             Edit
                           </button>
                           <button onClick={() => handleDeleteDraft(draft.id)} disabled={deletingId === draft.id}
@@ -708,7 +789,7 @@ const Dashboard: React.FC = () => {
                             {deletingId === draft.id ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}
                           </button>
                           <button onClick={() => handleCompleteDraft(draft.id)} disabled={completingId === draft.id}
-                            className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-1">
+                            className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-1 whitespace-nowrap">
                             {completingId === draft.id ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
                             Receive
                           </button>
@@ -733,13 +814,13 @@ const Dashboard: React.FC = () => {
                     </div>
                   ))}</div>
                 )}
-                {!purchasesLoading && recentPurchases.filter(p => p.status === 'completed').length === 0 && (
+                {!purchasesLoading && completedPurchases.length === 0 && (
                   <div className="text-center py-8 text-gray-400">
                     <Truck size={24} className="mx-auto mb-2 opacity-30" />
                     <p className="text-sm">No completed purchases yet</p>
                   </div>
                 )}
-                {!purchasesLoading && recentPurchases.filter(p => p.status === 'completed').map(p => (
+                {!purchasesLoading && pagedPurchases.map(p => (
                   <div key={p.id} className="flex items-center gap-3 py-3 px-3 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-100 transition-all">
                     <div className="w-9 h-9 bg-teal-100 rounded-lg flex items-center justify-center shrink-0">
                       <Truck size={16} className="text-teal-600" />
@@ -755,6 +836,19 @@ const Dashboard: React.FC = () => {
                     <SaleBadge status={p.status} />
                   </div>
                 ))}
+                {!purchasesLoading && completedPurchases.length > 0 && (
+                  <div className="flex items-center justify-between pt-3 border-t border-gray-100 mt-1">
+                    <span className="text-xs text-gray-500">
+                      Showing {(purchasesPage - 1) * PAGE_SIZE + 1}–{Math.min(purchasesPage * PAGE_SIZE, completedPurchases.length)} of {completedPurchases.length}
+                    </span>
+                    <div className="flex gap-2">
+                      <button onClick={() => setPurchasesPage(p => Math.max(1, p - 1))} disabled={purchasesPage === 1}
+                        className="px-3 py-1 text-xs font-medium border border-gray-300 rounded-lg disabled:opacity-40 hover:bg-gray-50">Prev</button>
+                      <button onClick={() => setPurchasesPage(p => Math.min(purchasesPageCount, p + 1))} disabled={purchasesPage === purchasesPageCount}
+                        className="px-3 py-1 text-xs font-medium border border-gray-300 rounded-lg disabled:opacity-40 hover:bg-gray-50">Next</button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -793,9 +887,19 @@ const Dashboard: React.FC = () => {
 
               {/* Complete Inventory */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-semibold text-gray-800">Complete Inventory</h3>
-                  <div className="flex items-center gap-2">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-2">
+                  <h3 className="text-sm font-semibold text-gray-800 shrink-0">Complete Inventory</h3>
+                  <div className="relative flex-1">
+                    <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={invSearch}
+                      onChange={e => { setInvSearch(e.target.value); setInvPage(1); }}
+                      placeholder="Search by name or generic..."
+                      className="w-full pl-7 pr-3 py-1.5 text-xs border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
                     <div className="relative">
                       <button onClick={() => setShowInvFilter(p => !p)}
                         className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors ${invStatusFilter ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
@@ -831,7 +935,7 @@ const Dashboard: React.FC = () => {
                         ))}</tr>
                       )) : filteredInv.length === 0 ? (
                         <tr><td colSpan={10} className="px-3 py-8 text-center text-gray-400">No medicines found</td></tr>
-                      ) : filteredInv.map(med => {
+                      ) : pagedInv.map(med => {
                         const lbl = STATUS_MAP[med.status] || med.status;
                         const bc = STATUS_BADGE[lbl] || 'bg-gray-100 text-gray-600';
                         return (
@@ -852,6 +956,19 @@ const Dashboard: React.FC = () => {
                     </tbody>
                   </table>
                 </div>
+                {!invLoading && filteredInv.length > PAGE_SIZE && (
+                  <div className="flex items-center justify-between pt-3 mt-1">
+                    <span className="text-xs text-gray-500">
+                      Showing {(invPage - 1) * PAGE_SIZE + 1}–{Math.min(invPage * PAGE_SIZE, filteredInv.length)} of {filteredInv.length}
+                    </span>
+                    <div className="flex gap-2">
+                      <button onClick={() => setInvPage(p => Math.max(1, p - 1))} disabled={invPage === 1}
+                        className="px-3 py-1 text-xs font-medium border border-gray-300 rounded-lg disabled:opacity-40 hover:bg-gray-50">Prev</button>
+                      <button onClick={() => setInvPage(p => Math.min(invPageCount, p + 1))} disabled={invPage === invPageCount}
+                        className="px-3 py-1 text-xs font-medium border border-gray-300 rounded-lg disabled:opacity-40 hover:bg-gray-50">Next</button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

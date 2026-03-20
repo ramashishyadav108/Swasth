@@ -1,8 +1,11 @@
+import { useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 
 function App() {
+  const exportRef = useRef<(() => void) | null>(null);
+
   return (
     <BrowserRouter>
       <Routes>
@@ -13,8 +16,9 @@ function App() {
               title="Pharmacy CRM"
               subtitle="Manage your pharmacy efficiently"
               showAddButton={false}
+              onExportClick={() => exportRef.current?.()}
             >
-              <Dashboard />
+              <Dashboard onRegisterExport={(fn) => { exportRef.current = fn; }} />
             </Layout>
           }
         />
