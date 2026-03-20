@@ -94,10 +94,10 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
 
 
 @router.get("/recent-sales", response_model=List[RecentSaleOut])
-def get_recent_sales(limit: int = 10, db: Session = Depends(get_db)):
+def get_recent_sales(limit: int = 500, db: Session = Depends(get_db)):
     """Return the most recent sales with computed items_count."""
-    if limit < 1 or limit > 100:
-        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    if limit < 1 or limit > 1000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 1000")
 
     sales = (
         db.query(Sale)
