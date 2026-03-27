@@ -1,8 +1,0 @@
-=== INVENTORY ===
-Name,Generic,Category,Batch,Expiry,Qty,Cost,MRP,Supplier,Status
-
-=== SALES ===
-Invoice,Patient,Payment,Amount,Items,Date,Status
-
-=== PURCHASES ===
-Order No,Supplier,Payment,Amount,Items,Date,Status
