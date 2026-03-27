@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -21,13 +22,25 @@ router = APIRouter(prefix="/api/purchases", tags=["Purchases"])
 
 
 def _next_order_no(db: Session) -> str:
-    count = db.query(PurchaseOrder).count()
     year = datetime.utcnow().year
-    return f"PO-{year}-{count + 1:04d}"
+    prefix = f"PO-{year}-"
+    max_no = (
+        db.query(func.max(PurchaseOrder.order_no))
+        .filter(PurchaseOrder.order_no.like(f"{prefix}%"))
+        .scalar()
+    )
+    if max_no:
+        try:
+            last_seq = int(max_no.split("-")[-1])
+        except ValueError:
+            last_seq = 0
+    else:
+        last_seq = 0
+    return f"{prefix}{last_seq + 1:04d}"
 
 
 def _apply_stock(db: Session, purchase: PurchaseOrder, items: List[PurchaseItemDirectCreate]) -> None:
-    """Increase medicine stock for each item; create medicine if batch not found."""
+    # update stock or create new medicine if batch not found
     for item in items:
         med = db.query(Medicine).filter(Medicine.batch_no == item.batch_no).first()
 
@@ -64,16 +77,13 @@ def _apply_stock(db: Session, purchase: PurchaseOrder, items: List[PurchaseItemD
         db.add(purchase_item)
 
 
-# ── Save as pending draft ───────────────────────────────────────────────────
-
+# save as pending draft
 @router.post("/draft", response_model=PurchaseDraftOut, status_code=201)
 def save_draft(payload: PurchaseDraftCreate, db: Session = Depends(get_db)):
-    """Save purchase rows as a pending draft without touching stock."""
     total_amount = sum(item.quantity * item.unit_price for item in payload.items)
     first_supplier = payload.items[0].supplier if payload.items else "Unknown"
     order_no = _next_order_no(db)
 
-    # Serialize items to JSON for storage
     draft_json = json.dumps([item.dict() for item in payload.items], default=str)
 
     purchase = PurchaseOrder(
@@ -101,11 +111,9 @@ def save_draft(payload: PurchaseDraftCreate, db: Session = Depends(get_db)):
     )
 
 
-# ── List pending drafts ─────────────────────────────────────────────────────
-
+# list pending drafts
 @router.get("/pending", response_model=List[PurchaseDraftOut])
 def list_pending(db: Session = Depends(get_db)):
-    """Return all pending purchase drafts."""
     orders = (
         db.query(PurchaseOrder)
         .filter(PurchaseOrder.status == "pending")
@@ -133,11 +141,9 @@ def list_pending(db: Session = Depends(get_db)):
     return result
 
 
-# ── Complete a pending draft ────────────────────────────────────────────────
-
+# delete or complete a pending draft
 @router.delete("/{purchase_id}", status_code=204)
 def delete_draft(purchase_id: int, db: Session = Depends(get_db)):
-    """Delete a pending purchase draft."""
     purchase = db.query(PurchaseOrder).filter(PurchaseOrder.id == purchase_id).first()
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase order not found.")
@@ -149,7 +155,6 @@ def delete_draft(purchase_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{purchase_id}/complete", response_model=PurchaseOrderOut)
 def complete_draft(purchase_id: int, db: Session = Depends(get_db)):
-    """Finalize a pending purchase: apply stock and mark completed."""
     purchase = db.query(PurchaseOrder).filter(PurchaseOrder.id == purchase_id).first()
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase order not found.")
@@ -168,11 +173,9 @@ def complete_draft(purchase_id: int, db: Session = Depends(get_db)):
     return purchase
 
 
-# ── Receive immediately (completed) ────────────────────────────────────────
-
+# receive stock immediately
 @router.post("", response_model=PurchaseOrderOut, status_code=201)
 def create_purchase(payload: PurchaseDirectCreate, db: Session = Depends(get_db)):
-    """Receive stock immediately: apply stock and save as completed."""
     total_amount = sum(item.quantity * item.unit_price for item in payload.items)
     first_supplier = payload.items[0].supplier if payload.items else "Unknown"
     order_no = _next_order_no(db)
@@ -194,11 +197,9 @@ def create_purchase(payload: PurchaseDirectCreate, db: Session = Depends(get_db)
     return purchase
 
 
-# ── List all purchases ──────────────────────────────────────────────────────
-
+# list all purchases
 @router.get("", response_model=List[RecentPurchaseOut])
 def list_purchases(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
-    """Return recent purchases (all statuses), newest first."""
     purchases = (
         db.query(PurchaseOrder)
         .order_by(PurchaseOrder.created_at.desc())
